@@ -152,7 +152,10 @@ class Body {
         ctx.beginPath();
         ctx.moveTo(this.trail[i-1].x, this.trail[i-1].y);
         ctx.lineTo(this.trail[i].x, this.trail[i].y);
-        ctx.strokeStyle = this.color + Math.floor(alpha * 255).toString(16).padStart(2, '0');
+        
+        // Create alpha value for CSS color
+        const alphaHex = Math.floor(alpha * 255).toString(16).padStart(2, '0');
+        ctx.strokeStyle = this.color + alphaHex;
         ctx.lineWidth = width;
         ctx.stroke();
       }
@@ -637,6 +640,18 @@ document.addEventListener("keydown", (e) => {
     case 'p':
       loadPreset();
       break;
+    case 's':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        saveSimulation();
+      }
+      break;
+    case 'l':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        loadSimulation();
+      }
+      break;
     case 'g':
       showGrid = !showGrid;
       document.getElementById("gridToggle").checked = showGrid;
@@ -769,10 +784,108 @@ function loadPreset() {
   }, 2000);
 }
 
+// Save/Load functionality
+function saveSimulation() {
+  const simulationState = {
+    bodies: bodies.map(body => ({
+      x: body.x,
+      y: body.y,
+      vx: body.vx,
+      vy: body.vy,
+      mass: body.mass,
+      color: body.color,
+      oldX: body.oldX,
+      oldY: body.oldY
+    })),
+    simTime: simTime,
+    G: G,
+    timeRate: timeRate,
+    zoomLevel: zoomLevel,
+    panX: panX,
+    panY: panY,
+    timestamp: Date.now()
+  };
+  
+  const dataStr = JSON.stringify(simulationState, null, 2);
+  const dataBlob = new Blob([dataStr], {type: 'application/json'});
+  
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(dataBlob);
+  link.download = `gravity-simulation-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+  link.click();
+  
+  // Show feedback
+  const saveBtn = document.getElementById("saveBtn");
+  saveBtn.textContent = "Saved!";
+  setTimeout(() => {
+    saveBtn.textContent = "Save";
+  }, 2000);
+}
+
+function loadSimulation() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = function(event) {
+    const file = event.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const simulationState = JSON.parse(e.target.result);
+          
+          // Clear current simulation
+          clearSimulation();
+          
+          // Restore bodies
+          simulationState.bodies.forEach(bodyData => {
+            const body = new Body(
+              bodyData.x, bodyData.y,
+              bodyData.vx, bodyData.vy,
+              bodyData.mass, bodyData.color
+            );
+            body.oldX = bodyData.oldX || body.x - body.vx;
+            body.oldY = bodyData.oldY || body.y - body.vy;
+            bodies.push(body);
+          });
+          
+          // Restore simulation parameters
+          simTime = simulationState.simTime || 0;
+          G = simulationState.G || 0.1;
+          timeRate = simulationState.timeRate || 1;
+          zoomLevel = simulationState.zoomLevel || 1;
+          panX = simulationState.panX || 0;
+          panY = simulationState.panY || 0;
+          
+          // Update UI controls
+          document.getElementById("gravityStrength").value = G;
+          document.getElementById("gravityValue").textContent = G;
+          document.getElementById("timeRate").value = timeRate;
+          document.getElementById("timeRateValue").textContent = timeRate;
+          
+          // Show feedback
+          const loadBtn = document.getElementById("loadBtn");
+          loadBtn.textContent = "Loaded!";
+          setTimeout(() => {
+            loadBtn.textContent = "Load";
+          }, 2000);
+          
+        } catch (error) {
+          alert("Error loading simulation file: " + error.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+  input.click();
+}
+
 // Attach event listener after DOM is loaded
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("clearBtn").addEventListener("click", clearSimulation);
   document.getElementById("presetBtn").addEventListener("click", loadPreset);
+  document.getElementById("saveBtn").addEventListener("click", saveSimulation);
+  document.getElementById("loadBtn").addEventListener("click", loadSimulation);
   
   const menu = document.getElementById("menu");
   const menuBtn = document.getElementById("menuBtn");
