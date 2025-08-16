@@ -31,10 +31,22 @@ let showVelocityArrows = true; // Velocity arrows toggle
 let showMassNumbers = true; // Mass numbers toggle
 let simTime = 0; // Simulation time in seconds
 
+// Zoom and pan variables
+let zoomLevel = 1;
+let panX = 0;
+let panY = 0;
+let isPanning = false;
+let lastPanX = 0;
+let lastPanY = 0;
+
 // Update simulation parameters from controls
 document.getElementById("timeRate").addEventListener("input", (e) => {
   timeRate = parseFloat(e.target.value);
   document.getElementById("timeRateValue").innerText = timeRate;
+});
+document.getElementById("gravityStrength").addEventListener("input", (e) => {
+  G = parseFloat(e.target.value);
+  document.getElementById("gravityValue").innerText = G;
 });
 document.getElementById("massInput").addEventListener("input", (e) => {
   document.getElementById("massValue").innerText = e.target.value;
@@ -49,8 +61,12 @@ class Body {
   constructor(x, y, vx, vy, mass, color) {
     this.x = x;
     this.y = y;
+    this.oldX = x - vx; // Previous position for Verlet integration
+    this.oldY = y - vy;
     this.vx = vx;
     this.vy = vy;
+    this.ax = 0; // Current acceleration
+    this.ay = 0;
     this.mass = mass;
     this.color = color || "white";
     this.radius = Math.cbrt(mass) * 2;
@@ -61,12 +77,25 @@ class Body {
 
   // Draw the body on the canvas
   draw(ctx) {
+    // Add glow effect for massive bodies
+    if (this.mass > 500) {
+      const glowIntensity = Math.min(20, this.mass / 50);
+      ctx.save();
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur = glowIntensity;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius + glowIntensity/4, 0, Math.PI * 2);
+      ctx.fillStyle = this.color + '20'; // Semi-transparent outer glow
+      ctx.fill();
+      ctx.restore();
+    }
+    
     // Draw body
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fillStyle = this.color;
     ctx.shadowColor = this.color;
-    ctx.shadowBlur = 12;
+    ctx.shadowBlur = Math.min(12, this.mass / 100);
     ctx.fill();
     ctx.shadowBlur = 0;
     // Draw velocity vector as an arrow if speed is big enough
@@ -113,17 +142,23 @@ class Body {
     }
   }
 
-  // Draw the trail as a line
+  // Draw the trail as a line with fade effect
   drawTrail(ctx) {
     if (this.trail.length > 1) {
-      ctx.beginPath();
-      ctx.moveTo(this.trail[0].x, this.trail[0].y);
-      for (let point of this.trail) {
-        ctx.lineTo(point.x, point.y);
+      for (let i = 1; i < this.trail.length; i++) {
+        const alpha = i / this.trail.length; // Fade from 0 to 1
+        const width = 1 + (alpha * 2); // Trail gets thicker towards current position
+        
+        ctx.beginPath();
+        ctx.moveTo(this.trail[i-1].x, this.trail[i-1].y);
+        ctx.lineTo(this.trail[i].x, this.trail[i].y);
+        
+        // Create alpha value for CSS color
+        const alphaHex = Math.floor(alpha * 255).toString(16).padStart(2, '0');
+        ctx.strokeStyle = this.color + alphaHex;
+        ctx.lineWidth = width;
+        ctx.stroke();
       }
-      ctx.strokeStyle = this.color;
-      ctx.lineWidth = 1;
-      ctx.stroke();
     }
   }
 
@@ -235,6 +270,9 @@ function mergeBodies(bodyA, bodyB) {
     newMass,
     newColor
   );
+  // Set proper old positions for Verlet integration
+  newBody.oldX = newBody.x - newVx;
+  newBody.oldY = newBody.y - newVy;
   return newBody;
 }
 
@@ -243,48 +281,67 @@ bodies.push(
   new Body(canvas.width / 2, canvas.height / 2, 0, 0, 1000, "#ffff00")
 );
 
-// Collision effect: flash and particle burst
+// Enhanced collision effect: more realistic particle physics
 let collisionEffects = [];
-function spawnCollisionEffect(x, y, color) {
-  for (let i = 0; i < 18; i++) {
-    const angle = (i / 18) * 2 * Math.PI;
-    const speed = 2 + Math.random() * 2;
+function spawnCollisionEffect(x, y, color, energy = 1) {
+  const particleCount = Math.min(30, Math.max(10, energy * 20));
+  for (let i = 0; i < particleCount; i++) {
+    const angle = (i / particleCount) * 2 * Math.PI + Math.random() * 0.5;
+    const speed = (1 + Math.random() * 3) * energy;
+    const size = 2 + Math.random() * 3;
+    const lifetime = 1 + Math.random() * 0.5;
     collisionEffects.push({
       x, y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
       alpha: 1,
-      color
+      maxAlpha: 1,
+      color,
+      size,
+      lifetime,
+      age: 0,
+      gravity: -0.1 // Slight upward bias for visual appeal
     });
   }
 }
+
 function drawCollisionEffects(ctx) {
   for (let eff of collisionEffects) {
     ctx.save();
     ctx.globalAlpha = eff.alpha;
     ctx.beginPath();
-    ctx.arc(eff.x, eff.y, 3, 0, 2 * Math.PI);
+    ctx.arc(eff.x, eff.y, eff.size, 0, 2 * Math.PI);
     ctx.fillStyle = eff.color;
+    ctx.fill();
+    // Add subtle glow effect
+    ctx.shadowColor = eff.color;
+    ctx.shadowBlur = eff.size * 2;
     ctx.fill();
     ctx.restore();
   }
 }
+
 function updateCollisionEffects() {
   for (let eff of collisionEffects) {
     eff.x += eff.vx;
     eff.y += eff.vy;
-    eff.alpha -= 0.04;
+    eff.vy += eff.gravity; // Apply gravity to particles
+    eff.vx *= 0.995; // Air resistance
+    eff.vy *= 0.995;
+    eff.age += 0.016; // Approximate frame time
+    eff.alpha = eff.maxAlpha * (1 - eff.age / eff.lifetime);
+    eff.size *= 0.99; // Particles shrink over time
   }
-  collisionEffects = collisionEffects.filter(eff => eff.alpha > 0);
+  collisionEffects = collisionEffects.filter(eff => eff.alpha > 0.01);
 }
 
 // Update the simulation: compute forces and update positions of all bodies
 function update() {
-  // Loop through each body and compute gravitational acceleration
+  // First pass: compute gravitational acceleration for all bodies
   for (let i = 0; i < bodies.length; i++) {
     let bodyA = bodies[i];
-    let ax = 0;
-    let ay = 0;
+    bodyA.ax = 0;
+    bodyA.ay = 0;
 
     for (let j = 0; j < bodies.length; j++) {
       if (i === j) continue;
@@ -292,20 +349,36 @@ function update() {
       let dx = bodyB.x - bodyA.x;
       let dy = bodyB.y - bodyA.y;
       let distance = Math.sqrt(dx * dx + dy * dy);
+      // Add softening parameter to prevent singularities
       let force = (G * bodyA.mass * bodyB.mass) / (distance * distance + 25);
-      ax += (force * dx) / distance / bodyA.mass;
-      ay += (force * dy) / distance / bodyA.mass;
+      bodyA.ax += (force * dx) / distance / bodyA.mass;
+      bodyA.ay += (force * dy) / distance / bodyA.mass;
     }
-
-    // Update velocity using the computed acceleration
-    bodyA.vx += ax * timeRate;
-    bodyA.vy += ay * timeRate;
   }
 
-  // Update positions based on velocities and add trail points
+  // Second pass: update positions using Verlet integration for better stability
   for (let body of bodies) {
-    body.x += body.vx * timeRate;
-    body.y += body.vy * timeRate;
+    const dt = timeRate;
+    const dt2 = dt * dt;
+    
+    // Store current position
+    const currentX = body.x;
+    const currentY = body.y;
+    
+    // Verlet integration: x_new = 2*x_current - x_old + a*dt^2
+    body.x = 2 * body.x - body.oldX + body.ax * dt2;
+    body.y = 2 * body.y - body.oldY + body.ay * dt2;
+    
+    // Update old position
+    body.oldX = currentX;
+    body.oldY = currentY;
+    
+    // Update velocity for display purposes: v = (x_new - x_old) / (2*dt)
+    if (dt > 0) {
+      body.vx = (body.x - body.oldX) / (2 * dt);
+      body.vy = (body.y - body.oldY) / (2 * dt);
+    }
+    
     body.addTrailPoint(); // Add the current position to the trail
   }
   
@@ -316,6 +389,13 @@ function update() {
       const dy = bodies[i].y - bodies[j].y;
       const distance = Math.hypot(dx, dy);
       if (distance < (bodies[i].radius + bodies[j].radius)) {
+        // Calculate collision energy for particle effect
+        const relativeVx = bodies[i].vx - bodies[j].vx;
+        const relativeVy = bodies[i].vy - bodies[j].vy;
+        const relativeSpeed = Math.hypot(relativeVx, relativeVy);
+        const totalMass = bodies[i].mass + bodies[j].mass;
+        const collisionEnergy = Math.min(5, relativeSpeed * totalMass * 0.001);
+        
         // Merge bodies[i] and bodies[j]
         const newBody = mergeBodies(bodies[i], bodies[j]);
         // Calculate collision point in world coordinates
@@ -324,8 +404,8 @@ function update() {
         // Convert to screen coordinates (taking into account barycenter translation)
         const collisionScreenX = collisionWorldX + (canvas.width / 2 - displayBarycenterX);
         const collisionScreenY = collisionWorldY + (canvas.height / 2 - displayBarycenterY);
-        // Spawn collision effect at correct screen position
-        spawnCollisionEffect(collisionScreenX, collisionScreenY, newBody.color);
+        // Spawn collision effect at correct screen position with energy-based intensity
+        spawnCollisionEffect(collisionScreenX, collisionScreenY, newBody.color, collisionEnergy);
         // Remove colliding bodies from the array
         bodies.splice(j, 1);
         bodies.splice(i, 1);
@@ -387,12 +467,13 @@ function draw() {
   baryOffsetX = displayBarycenterX;
   baryOffsetY = displayBarycenterY;
 
-  // Save the context and translate so the barycenter is centered.
+  // Save the context and apply transformations
   ctx.save();
-  ctx.translate(
-    canvas.width / 2 - displayBarycenterX,
-    canvas.height / 2 - displayBarycenterY
-  );
+  
+  // Apply zoom and pan transformations
+  ctx.translate(canvas.width / 2 + panX, canvas.height / 2 + panY);
+  ctx.scale(zoomLevel, zoomLevel);
+  ctx.translate(-displayBarycenterX, -displayBarycenterY);
 
   // Draw grid if enabled
   if (showGrid) drawGrid(ctx);
@@ -415,7 +496,21 @@ function draw() {
 }
 
 // Main animation loop: update physics and redraw the scene
+let frameCount = 0;
+let lastFrameTime = performance.now();
+let fps = 60;
+
 function loop() {
+  const currentTime = performance.now();
+  const deltaTime = currentTime - lastFrameTime;
+  frameCount++;
+  
+  // Update FPS every 60 frames
+  if (frameCount % 60 === 0) {
+    fps = Math.round(1000 / (deltaTime));
+  }
+  lastFrameTime = currentTime;
+  
   if (!isPaused) {
     update();
     simTime += 0.016 * timeRate; // Approximate frame time
@@ -426,6 +521,8 @@ function loop() {
   // Update stats
   const totalMass = bodies.reduce((sum, b) => sum + b.mass, 0);
   const avgSpeed = bodies.length ? (bodies.reduce((sum, b) => sum + Math.hypot(b.vx, b.vy), 0) / bodies.length).toFixed(2) : 0;
+  const totalEnergy = bodies.reduce((sum, b) => sum + 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy), 0);
+  
   document.getElementById("bodiesCount").textContent = `Bodies: ${bodies.length}`;
   document.getElementById("simTime").textContent = `Time: ${simTime.toFixed(1)}s`;
   if (!document.getElementById("extraStats")) {
@@ -434,31 +531,72 @@ function loop() {
     span.id = "extraStats";
     stats.appendChild(span);
   }
-  document.getElementById("extraStats").textContent = ` | Total Mass: ${Math.round(totalMass)} | Avg Speed: ${avgSpeed}`;
+  document.getElementById("extraStats").textContent = ` | Mass: ${Math.round(totalMass)} | Speed: ${avgSpeed} | Energy: ${Math.round(totalEnergy)} | FPS: ${fps} | Zoom: ${zoomLevel.toFixed(1)}x`;
   requestAnimationFrame(loop);
 }
 loop();
 
 // Mouse event listeners for interactive creation of a new body
 
-// On mousedown: record starting position and clear any existing preview
-canvas.addEventListener("mousedown", (e) => {
-  isDragging = true;
+// Helper function to convert screen coordinates to world coordinates
+function screenToWorld(screenX, screenY) {
+  const worldX = (screenX - canvas.width / 2 - panX) / zoomLevel + displayBarycenterX;
+  const worldY = (screenY - canvas.height / 2 - panY) / zoomLevel + displayBarycenterY;
+  return { x: worldX, y: worldY };
+}
+
+// Mouse wheel zoom
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+  const newZoomLevel = Math.max(0.1, Math.min(5, zoomLevel * zoomFactor));
+  
+  // Zoom towards mouse position
   const rect = canvas.getBoundingClientRect();
-  startX = e.clientX - rect.left - (canvas.width / 2 - baryOffsetX);
-  startY = e.clientY - rect.top - (canvas.height / 2 - baryOffsetY);
-  previewBody = null;
+  const mouseX = e.clientX - rect.left - canvas.width / 2;
+  const mouseY = e.clientY - rect.top - canvas.height / 2;
+  
+  panX = mouseX - (mouseX - panX) * (newZoomLevel / zoomLevel);
+  panY = mouseY - (mouseY - panY) * (newZoomLevel / zoomLevel);
+  zoomLevel = newZoomLevel;
 });
 
-// On mousemove: if dragging, update the preview body and compute its future path
+// On mousedown: record starting position and clear any existing preview
+canvas.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  
+  if (e.button === 2) { // Right mouse button for panning
+    isPanning = true;
+    lastPanX = mouseX;
+    lastPanY = mouseY;
+    canvas.style.cursor = 'grabbing';
+  } else if (e.button === 0) { // Left mouse button for creating bodies
+    isDragging = true;
+    const worldCoords = screenToWorld(mouseX, mouseY);
+    startX = worldCoords.x;
+    startY = worldCoords.y;
+    previewBody = null;
+  }
+});
+
+// On mousemove: handle panning or body creation preview
 canvas.addEventListener("mousemove", (e) => {
-  if (isDragging) {
-    const rect = canvas.getBoundingClientRect();
-    const currentX = e.clientX - rect.left - (canvas.width / 2 - baryOffsetX);
-    const currentY = e.clientY - rect.top - (canvas.height / 2 - baryOffsetY);
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  
+  if (isPanning) {
+    panX += mouseX - lastPanX;
+    panY += mouseY - lastPanY;
+    lastPanX = mouseX;
+    lastPanY = mouseY;
+  } else if (isDragging) {
+    const worldCoords = screenToWorld(mouseX, mouseY);
     // Compute velocity based on the drag distance
-    const vx = (currentX - startX) * 0.01;
-    const vy = (currentY - startY) * 0.01;
+    const vx = (worldCoords.x - startX) * 0.01;
+    const vy = (worldCoords.y - startY) * 0.01;
     // Read mass and color from controls
     const mass = parseFloat(document.getElementById("massInput").value);
     const color = document.getElementById("colorInput").value;
@@ -471,13 +609,70 @@ canvas.addEventListener("mousemove", (e) => {
 
 // On mouseup: add the preview body to the simulation and clear the preview
 canvas.addEventListener("mouseup", (e) => {
-  if (isDragging && previewBody) {
+  if (isPanning) {
+    isPanning = false;
+    canvas.style.cursor = 'default';
+  } else if (isDragging && previewBody) {
     // Clear the computed future path so it no longer draws
     previewBody.futurePath = [];
     bodies.push(previewBody);
   }
   isDragging = false;
   previewBody = null;
+});
+
+// Disable context menu on right-click
+canvas.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+});
+
+// Keyboard shortcuts
+document.addEventListener("keydown", (e) => {
+  switch(e.key.toLowerCase()) {
+    case ' ':
+      e.preventDefault();
+      isPaused = !isPaused;
+      document.getElementById("pauseBtn").textContent = isPaused ? "Resume" : "Pause";
+      break;
+    case 'c':
+      clearSimulation();
+      break;
+    case 'p':
+      loadPreset();
+      break;
+    case 's':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        saveSimulation();
+      }
+      break;
+    case 'l':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        loadSimulation();
+      }
+      break;
+    case 'g':
+      showGrid = !showGrid;
+      document.getElementById("gridToggle").checked = showGrid;
+      break;
+    case 'v':
+      showVelocityArrows = !showVelocityArrows;
+      document.getElementById("velocityToggle").checked = showVelocityArrows;
+      const velocityLegend = document.getElementById("velocityLegend");
+      velocityLegend.style.display = showVelocityArrows ? "inline-flex" : "none";
+      break;
+    case 'm':
+      showMassNumbers = !showMassNumbers;
+      document.getElementById("massToggle").checked = showMassNumbers;
+      break;
+    case 'r':
+      // Reset zoom and pan
+      zoomLevel = 1;
+      panX = 0;
+      panY = 0;
+      break;
+  }
 });
 
 function clearSimulation() {
@@ -488,6 +683,7 @@ function clearSimulation() {
   bodies = []; 
   previewBody = null;
   simTime = 0;
+  collisionEffects = [];
 
   // Optionally, if you want to restart with the initial body (e.g. a sun), uncomment below:
   // bodies.push(new Body(canvas.width / 2, canvas.height / 2, 0, 0, 1000, "yellow"));
@@ -496,9 +692,201 @@ function clearSimulation() {
   draw();
 }
 
+// Preset scenarios for educational purposes
+const presetScenarios = [
+  {
+    name: "Solar System",
+    bodies: [
+      { x: 0, y: 0, vx: 0, vy: 0, mass: 2000, color: "#ffff00" }, // Sun
+      { x: 150, y: 0, vx: 0, vy: 3, mass: 20, color: "#ff6b35" }, // Planet 1
+      { x: 250, y: 0, vx: 0, vy: 2.5, mass: 30, color: "#4a90e2" }, // Planet 2
+      { x: 350, y: 0, vx: 0, vy: 2, mass: 25, color: "#7ed321" }, // Planet 3
+    ]
+  },
+  {
+    name: "Binary Stars",
+    bodies: [
+      { x: -100, y: 0, vx: 0, vy: 2, mass: 800, color: "#ff3333" },
+      { x: 100, y: 0, vx: 0, vy: -2, mass: 800, color: "#3333ff" },
+      { x: 0, y: 200, vx: 1.5, vy: 0, mass: 15, color: "#ffffff" }, // Orbiting planet
+    ]
+  },
+  {
+    name: "Chaotic Three-Body",
+    bodies: [
+      { x: -50, y: -50, vx: 0.5, vy: 0.5, mass: 500, color: "#ff6b35" },
+      { x: 50, y: -50, vx: -0.5, vy: 0.5, mass: 500, color: "#4a90e2" },
+      { x: 0, y: 50, vx: 0, vy: -1, mass: 500, color: "#7ed321" },
+    ]
+  },
+  {
+    name: "Galaxy Formation",
+    bodies: generateGalaxyPreset()
+  }
+];
+
+function generateGalaxyPreset() {
+  const galaxyBodies = [];
+  const centerMass = 3000;
+  galaxyBodies.push({ x: 0, y: 0, vx: 0, vy: 0, mass: centerMass, color: "#ffff00" });
+  
+  // Generate spiral arms
+  for (let i = 0; i < 20; i++) {
+    const angle = (i / 20) * 4 * Math.PI; // 2 spiral arms
+    const radius = 100 + i * 15;
+    const x = Math.cos(angle) * radius;
+    const y = Math.sin(angle) * radius;
+    
+    // Calculate orbital velocity
+    const orbitalSpeed = Math.sqrt(G * centerMass / radius) * 0.8; // Slightly slower for stability
+    const vx = -Math.sin(angle) * orbitalSpeed;
+    const vy = Math.cos(angle) * orbitalSpeed;
+    
+    galaxyBodies.push({
+      x, y, vx, vy,
+      mass: 20 + Math.random() * 30,
+      color: `hsl(${200 + Math.random() * 60}, 70%, ${50 + Math.random() * 30}%)`
+    });
+  }
+  
+  return galaxyBodies;
+}
+
+let currentPresetIndex = 0;
+function loadPreset() {
+  clearSimulation();
+  const preset = presetScenarios[currentPresetIndex];
+  
+  // Convert relative positions to screen coordinates
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  
+  preset.bodies.forEach(bodyData => {
+    const body = new Body(
+      centerX + bodyData.x,
+      centerY + bodyData.y,
+      bodyData.vx,
+      bodyData.vy,
+      bodyData.mass,
+      bodyData.color
+    );
+    bodies.push(body);
+  });
+  
+  // Move to next preset for next time
+  currentPresetIndex = (currentPresetIndex + 1) % presetScenarios.length;
+  
+  // Show which preset was loaded
+  const presetBtn = document.getElementById("presetBtn");
+  presetBtn.textContent = `Next: ${presetScenarios[currentPresetIndex].name}`;
+  setTimeout(() => {
+    presetBtn.textContent = "Presets";
+  }, 2000);
+}
+
+// Save/Load functionality
+function saveSimulation() {
+  const simulationState = {
+    bodies: bodies.map(body => ({
+      x: body.x,
+      y: body.y,
+      vx: body.vx,
+      vy: body.vy,
+      mass: body.mass,
+      color: body.color,
+      oldX: body.oldX,
+      oldY: body.oldY
+    })),
+    simTime: simTime,
+    G: G,
+    timeRate: timeRate,
+    zoomLevel: zoomLevel,
+    panX: panX,
+    panY: panY,
+    timestamp: Date.now()
+  };
+  
+  const dataStr = JSON.stringify(simulationState, null, 2);
+  const dataBlob = new Blob([dataStr], {type: 'application/json'});
+  
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(dataBlob);
+  link.download = `gravity-simulation-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+  link.click();
+  
+  // Show feedback
+  const saveBtn = document.getElementById("saveBtn");
+  saveBtn.textContent = "Saved!";
+  setTimeout(() => {
+    saveBtn.textContent = "Save";
+  }, 2000);
+}
+
+function loadSimulation() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = function(event) {
+    const file = event.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const simulationState = JSON.parse(e.target.result);
+          
+          // Clear current simulation
+          clearSimulation();
+          
+          // Restore bodies
+          simulationState.bodies.forEach(bodyData => {
+            const body = new Body(
+              bodyData.x, bodyData.y,
+              bodyData.vx, bodyData.vy,
+              bodyData.mass, bodyData.color
+            );
+            body.oldX = bodyData.oldX || body.x - body.vx;
+            body.oldY = bodyData.oldY || body.y - body.vy;
+            bodies.push(body);
+          });
+          
+          // Restore simulation parameters
+          simTime = simulationState.simTime || 0;
+          G = simulationState.G || 0.1;
+          timeRate = simulationState.timeRate || 1;
+          zoomLevel = simulationState.zoomLevel || 1;
+          panX = simulationState.panX || 0;
+          panY = simulationState.panY || 0;
+          
+          // Update UI controls
+          document.getElementById("gravityStrength").value = G;
+          document.getElementById("gravityValue").textContent = G;
+          document.getElementById("timeRate").value = timeRate;
+          document.getElementById("timeRateValue").textContent = timeRate;
+          
+          // Show feedback
+          const loadBtn = document.getElementById("loadBtn");
+          loadBtn.textContent = "Loaded!";
+          setTimeout(() => {
+            loadBtn.textContent = "Load";
+          }, 2000);
+          
+        } catch (error) {
+          alert("Error loading simulation file: " + error.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+  input.click();
+}
+
 // Attach event listener after DOM is loaded
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("clearBtn").addEventListener("click", clearSimulation);
+  document.getElementById("presetBtn").addEventListener("click", loadPreset);
+  document.getElementById("saveBtn").addEventListener("click", saveSimulation);
+  document.getElementById("loadBtn").addEventListener("click", loadSimulation);
+  
   const menu = document.getElementById("menu");
   const menuBtn = document.getElementById("menuBtn");
 
